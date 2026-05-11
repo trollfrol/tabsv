@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SaveTabs — Save Open Tabs to HTML
 // @namespace    https://github.com/noimg
-// @version      1.1.0
-// @description  Saves all open tabs to a beautiful HTML page. Hotkey: Cmd+Shift+S
+// @version      1.2.0
+// @description  Saves all open tabs to a beautiful HTML page. Hotkey: Cmd+Shift+M
 // @author       Konstantin Batischev
 // @match        *://*/*
 // @run-at       document-idle
@@ -73,16 +73,16 @@
         }
     });
 
-    // ── Keyboard shortcut: Cmd+Shift+S ───────────────────────────────────────
+    // ── Keyboard shortcut: Cmd+Shift+M ───────────────────────────────────────
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'S' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
+        if (e.key === 'M' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
             e.preventDefault();
             doSaveTabs();
         }
     });
 
     // ── Menu commands (Userscripts toolbar icon) ──────────────────────────────
-    GM_registerMenuCommand('💾 Сохранить вкладки  (⌘⇧S)', doSaveTabs);
+    GM_registerMenuCommand('💾 Сохранить вкладки  (⌘⇧M)', doSaveTabs);
     GM_registerMenuCommand('⚙️ Имя файла', configFilename);
     GM_registerMenuCommand('🗑️ Очистить историю', clearHistory);
 
