@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SaveTabs — Save Open Tabs to HTML
 // @namespace    https://github.com/noimg
-// @version      1.0.0
-// @description  Saves all open tabs to a beautiful HTML page with full session history
+// @version      1.1.0
+// @description  Saves all open tabs to a beautiful HTML page. Hotkey: Cmd+Shift+S
 // @author       Konstantin Batischev
 // @match        *://*/*
 // @run-at       document-idle
@@ -73,8 +73,16 @@
         }
     });
 
-    // ── Menu commands ─────────────────────────────────────────────────────────
-    GM_registerMenuCommand('💾 Сохранить вкладки', doSaveTabs);
+    // ── Keyboard shortcut: Cmd+Shift+S ───────────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'S' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
+            e.preventDefault();
+            doSaveTabs();
+        }
+    });
+
+    // ── Menu commands (Userscripts toolbar icon) ──────────────────────────────
+    GM_registerMenuCommand('💾 Сохранить вкладки  (⌘⇧S)', doSaveTabs);
     GM_registerMenuCommand('⚙️ Имя файла', configFilename);
     GM_registerMenuCommand('🗑️ Очистить историю', clearHistory);
 
@@ -104,22 +112,35 @@
         const html     = buildHTML(sessions);
         const filename = GM_getValue(KEY_FILENAME, 'saved-tabs.html');
 
-        // Open interactive viewer
-        const viewerBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const viewerURL  = URL.createObjectURL(viewerBlob);
-        window.open(viewerURL, '_blank');
-        setTimeout(() => URL.revokeObjectURL(viewerURL), 15000);
+        // Single blob shared by viewer and download
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url  = URL.createObjectURL(blob);
 
-        // Download HTML file via <a download> (Safari-compatible)
-        const dlBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const dlURL  = URL.createObjectURL(dlBlob);
-        const a      = document.createElement('a');
-        a.href       = dlURL;
-        a.download   = filename;
+        // Trigger file download first (works regardless of popup policy)
+        const a = document.createElement('a');
+        a.href     = url;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
-        setTimeout(() => URL.revokeObjectURL(dlURL), 5000);
+
+        // Open interactive viewer — may be blocked by Safari popup policy
+        const viewer = window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 15000);
+
+        if (!viewer) {
+            // Popup was blocked: handle close decision here, then navigate to viewer
+            const shouldClose = confirm(
+                'Вкладки сохранены ✓\n\n' +
+                'Закрыть все остальные вкладки?\n\n' +
+                '(Safari заблокировал всплывающее окно — разрешите его в адресной строке для полного функционала)'
+            );
+            if (shouldClose) {
+                GM_setValue(KEY_CLOSE, Date.now());
+            }
+            // Navigate current tab to viewer after a tick so download can start
+            setTimeout(() => { location.href = url; }, 300);
+        }
     }
 
     function configFilename() {

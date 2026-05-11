@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SaveTabs — Save Open Tabs to HTML
 // @namespace    https://github.com/noimg
-// @version      1.0.0
-// @description  Saves all open tabs to a beautiful HTML page with full session history
+// @version      1.1.0
+// @description  Saves all open tabs to a beautiful HTML page. Hotkey: Ctrl+Shift+S
 // @author       Konstantin Batischev
 // @match        *://*/*
 // @run-at       document-idle
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
+// @grant        window.close
 // ==/UserScript==
 
 (function () {
@@ -72,8 +73,16 @@
         }
     });
 
-    // ── Menu commands ─────────────────────────────────────────────────────────
-    GM_registerMenuCommand('💾 Сохранить вкладки', doSaveTabs);
+    // ── Keyboard shortcut: Ctrl+Shift+S ──────────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'S' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
+            e.preventDefault();
+            doSaveTabs();
+        }
+    });
+
+    // ── Menu commands (Tampermonkey icon) ─────────────────────────────────────
+    GM_registerMenuCommand('💾 Сохранить вкладки  (Ctrl+Shift+S)', doSaveTabs);
     GM_registerMenuCommand('⚙️ Имя файла', configFilename);
     GM_registerMenuCommand('🗑️ Очистить историю', clearHistory);
 
@@ -104,22 +113,21 @@
         const html     = buildHTML(sessions);
         const filename = GM_getValue(KEY_FILENAME, 'saved-tabs.html');
 
-        // Open interactive viewer (window.open preserves window.opener for postMessage)
-        const viewerBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const viewerURL  = URL.createObjectURL(viewerBlob);
-        window.open(viewerURL, '_blank');
-        setTimeout(() => URL.revokeObjectURL(viewerURL), 15000);
+        // Single blob shared by viewer and download
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url  = URL.createObjectURL(blob);
 
-        // Trigger download of the HTML file
-        const dlBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const dlURL  = URL.createObjectURL(dlBlob);
-        const a      = document.createElement('a');
-        a.href       = dlURL;
-        a.download   = filename;
+        // Trigger file download
+        const a = document.createElement('a');
+        a.href     = url;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
-        setTimeout(() => URL.revokeObjectURL(dlURL), 5000);
+
+        // Open interactive viewer (window.open preserves window.opener for postMessage)
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 15000);
     }
 
     function configFilename() {
