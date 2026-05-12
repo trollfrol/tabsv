@@ -73,13 +73,38 @@
         }
     });
 
+    // ── Toast helper ──────────────────────────────────────────────────────────
+    function showToast(msg) {
+        const t = document.createElement('div');
+        t.textContent = msg;
+        Object.assign(t.style, {
+            position: 'fixed', bottom: '24px', right: '24px', zIndex: '2147483647',
+            background: '#6366f1', color: '#fff', padding: '10px 18px',
+            borderRadius: '8px', fontSize: '14px', fontFamily: 'system-ui,sans-serif',
+            boxShadow: '0 4px 24px rgba(0,0,0,.4)', pointerEvents: 'none',
+            transition: 'opacity .4s', opacity: '1',
+        });
+        document.body.appendChild(t);
+        setTimeout(() => { t.style.opacity = '0'; }, 1800);
+        setTimeout(() => t.remove(), 2300);
+    }
+
     // ── Keyboard shortcut: Cmd+Shift+M ───────────────────────────────────────
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'M' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
+    // e.code ('KeyM') is layout-independent and reliable across Safari versions.
+    // Capture phase (true) ensures we get the event before page handlers.
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'KeyM' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
             e.preventDefault();
             doSaveTabs();
         }
-    });
+    }, true);
+
+    // ── Startup toast (confirms the script is running) ────────────────────────
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => showToast('SaveTabs готов  ⌘⇧M'));
+    } else {
+        showToast('SaveTabs готов  ⌘⇧M');
+    }
 
     // ── Menu commands (Userscripts toolbar icon) ──────────────────────────────
     GM_registerMenuCommand('💾 Сохранить вкладки  (⌘⇧M)', doSaveTabs);
