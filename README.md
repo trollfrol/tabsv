@@ -8,7 +8,6 @@ with full session history. Each run prepends a new dated session to the file.
 | File | Target |
 |------|--------|
 | `savetabs.user.js` | Chromium browsers (Chrome, Edge, Brave, …) via Tampermonkey |
-| `savetabs.safari.user.js` | Safari via [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) |
 
 ## Installation — Chromium (Tampermonkey)
 
@@ -18,14 +17,6 @@ with full session history. Each run prepends a new dated session to the file.
 4. Save (`Ctrl+S` / `Cmd+S`).
 5. Reload any open tabs so they register themselves.
 6. Click the Tampermonkey icon → **💾 Сохранить вкладки**.
-
-## Installation — Safari (Userscripts)
-
-1. Install [Userscripts](https://apps.apple.com/app/userscripts/id1463298887) from the App Store (free).
-2. Enable: **Safari → Settings → Extensions → Userscripts ✓**.
-3. Click the Userscripts toolbar icon → **Open Userscripts Directory**.
-4. Copy `savetabs.safari.user.js` into that directory.
-5. Reload tabs, then trigger via the Userscripts menu.
 
 ## How it works
 
@@ -40,7 +31,6 @@ and refreshes its entry every 30 seconds. "Save Tabs" reads this shared registry
 | Platform | How |
 |---|---|
 | Tampermonkey | Click icon → **💾 Сохранить вкладки** |
-| Userscripts | Click icon → **💾 Сохранить вкладки** |
 
 ### What happens
 
