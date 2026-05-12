@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SaveTabs — Save Open Tabs to HTML
 // @namespace    https://github.com/noimg
-// @version      1.4.0
+// @version      1.6.0
 // @description  Saves all open tabs to a beautiful HTML page. Hotkey: Cmd+Shift+M
 // @author       Konstantin Batischev
 // @match        *://*/*
@@ -10,6 +10,12 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // ==/UserScript==
+
+// Safari / Userscripts note:
+//   GM_getValue / GM_setValue in the Userscripts Safari extension return Promises,
+//   not synchronous values. All GM calls therefore use async/await via
+//   Promise.resolve() wrappers, making the code compatible with both sync and
+//   async implementations.
 
 (function () {
     'use strict';
@@ -23,7 +29,7 @@
     const MAX_SESSIONS = 50;
     const POLL_MS      = 1200;
 
-    // ── Toast (defined first — used for diagnostics from the start) ───────────
+    // ── Toast ─────────────────────────────────────────────────────────────────
     function showToast(msg, color) {
         if (!document.body) return;
         const t = document.createElement('div');
@@ -40,27 +46,18 @@
         setTimeout(() => { if (t.parentNode) t.remove(); }, 2300);
     }
 
-    // ── Safe GM wrappers (never throw) ────────────────────────────────────────
-    function gmGet(key, def) {
-        try { return GM_getValue(key, def); }
-        catch (_) { return def; }
+    // ── Async-safe GM wrappers ────────────────────────────────────────────────
+    // Promise.resolve() makes these work whether GM returns a value or a Promise.
+    async function gmGet(key, def) {
+        try {
+            const v = await Promise.resolve(GM_getValue(key, def));
+            return (v !== undefined && v !== null) ? v : def;
+        } catch (_) { return def; }
     }
-    function gmSet(key, val) {
-        try { GM_setValue(key, val); }
+    async function gmSet(key, val) {
+        try { await Promise.resolve(GM_setValue(key, val)); }
         catch (_) {}
     }
-
-    // ── GM storage diagnostic + startup toast ─────────────────────────────────
-    // Write a test value and immediately read it back to check if GM works.
-    let gmWorking = false;
-    try {
-        GM_setValue('__st_ping__', 'ok');
-        gmWorking = (GM_getValue('__st_ping__', '') === 'ok');
-    } catch (_) {}
-
-    showToast(gmWorking
-        ? 'SaveTabs готов  ⌘⇧M'
-        : 'SaveTabs готов  ⌘⇧M\n(GM хранилище недоступно — только текущая вкладка)');
 
     // ── Per-tab identity ──────────────────────────────────────────────────────
     let myId = sessionStorage.getItem('savetabs_id');
@@ -70,36 +67,29 @@
     }
 
     // ── Self-registration ─────────────────────────────────────────────────────
-    function registerSelf() {
+    async function registerSelf() {
         let reg;
-        try { reg = JSON.parse(gmGet(KEY_REGISTRY, '[]')); }
+        try { reg = JSON.parse(await gmGet(KEY_REGISTRY, '[]')); }
         catch (_) { reg = []; }
+        if (!Array.isArray(reg)) reg = [];
 
         const now = Date.now();
         reg = reg.filter(t => now - t.ts < STALE_MS && t.id !== myId);
-        reg.push({
-            id: myId,
-            url: location.href,
-            title: document.title || location.hostname,
-            ts: now,
-        });
-        gmSet(KEY_REGISTRY, JSON.stringify(reg));
+        reg.push({ id: myId, url: location.href, title: document.title || location.hostname, ts: now });
+        await gmSet(KEY_REGISTRY, JSON.stringify(reg));
     }
 
-    registerSelf();
-    setInterval(registerSelf, 30000);
-
-    // ── Close signaling via polling ───────────────────────────────────────────
+    // ── Close signaling (async polling) ──────────────────────────────────────
     const startedAt = Date.now();
 
-    setInterval(() => {
-        const closeAt = Number(gmGet(KEY_CLOSE, 0));
+    setInterval(async () => {
+        const closeAt = Number(await gmGet(KEY_CLOSE, 0));
         if (closeAt > startedAt) window.close();
     }, POLL_MS);
 
-    window.addEventListener('message', (e) => {
+    window.addEventListener('message', async (e) => {
         if (e.data && e.data.savetabs === 'CLOSE_ALL') {
-            gmSet(KEY_CLOSE, Date.now());
+            await gmSet(KEY_CLOSE, Date.now());
             setTimeout(() => window.close(), 350);
         }
     });
@@ -119,18 +109,35 @@
         GM_registerMenuCommand('🗑️ Очистить историю', clearHistory);
     } catch (_) {}
 
+    // ── Startup: test GM, register self, show result ──────────────────────────
+    (async () => {
+        let gmWorking = false;
+        try {
+            await gmSet('__st_ping__', 'ok');
+            gmWorking = (await gmGet('__st_ping__', '')) === 'ok';
+        } catch (_) {}
+
+        showToast(gmWorking
+            ? 'SaveTabs готов  ⌘⇧M'
+            : 'SaveTabs готов  ⌘⇧M  (только текущая вкладка)');
+
+        await registerSelf();
+        setInterval(() => registerSelf(), 30000);
+    })();
+
     // ── Main action ───────────────────────────────────────────────────────────
-    function doSaveTabs() {
-        registerSelf();
+    async function doSaveTabs() {
+        await registerSelf();
 
         let reg;
-        try { reg = JSON.parse(gmGet(KEY_REGISTRY, '[]')); }
+        try { reg = JSON.parse(await gmGet(KEY_REGISTRY, '[]')); }
         catch (_) { reg = []; }
+        if (!Array.isArray(reg)) reg = [];
 
         const now  = Date.now();
         const seen = new Set();
 
-        // Current tab is always added directly — works even if GM storage is broken
+        // Current tab always included directly — independent of GM storage
         const currentTab = { url: location.href, title: document.title || location.hostname, ts: now };
         const allEntries = [currentTab, ...reg.filter(t => now - t.ts < STALE_MS)];
 
@@ -141,28 +148,26 @@
         showToast(`Сохраняю ${tabs.length} вкладок…`);
 
         let sessions;
-        try { sessions = JSON.parse(gmGet(KEY_SESSIONS, '[]')); }
+        try { sessions = JSON.parse(await gmGet(KEY_SESSIONS, '[]')); }
         catch (_) { sessions = []; }
+        if (!Array.isArray(sessions)) sessions = [];
 
         sessions.unshift({ date: new Date().toISOString(), tabs });
         if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
-        gmSet(KEY_SESSIONS, JSON.stringify(sessions));
+        await gmSet(KEY_SESSIONS, JSON.stringify(sessions));
 
         const html     = buildHTML(sessions);
-        const filename = gmGet(KEY_FILENAME, 'saved-tabs.html');
+        const filename = await gmGet(KEY_FILENAME, 'saved-tabs.html');
 
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         const url  = URL.createObjectURL(blob);
 
-        // Download
         const a = document.createElement('a');
-        a.href     = url;
-        a.download = filename;
+        a.href = url; a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
 
-        // Open viewer
         const viewer = window.open(url, '_blank');
         setTimeout(() => URL.revokeObjectURL(url), 15000);
 
@@ -172,24 +177,24 @@
                 'Закрыть все остальные вкладки?\n\n' +
                 '(Safari заблокировал окно просмотра — разрешите в адресной строке)'
             );
-            if (shouldClose) gmSet(KEY_CLOSE, Date.now());
+            if (shouldClose) await gmSet(KEY_CLOSE, Date.now());
             setTimeout(() => { location.href = url; }, 300);
         }
     }
 
-    function configFilename() {
-        const cur = gmGet(KEY_FILENAME, 'saved-tabs.html');
+    async function configFilename() {
+        const cur = await gmGet(KEY_FILENAME, 'saved-tabs.html');
         const val = prompt('Имя файла для сохранения:', cur);
         if (val && val.trim()) {
             let fn = val.trim();
             if (!fn.endsWith('.html')) fn += '.html';
-            gmSet(KEY_FILENAME, fn);
+            await gmSet(KEY_FILENAME, fn);
         }
     }
 
-    function clearHistory() {
+    async function clearHistory() {
         if (confirm('Очистить всю историю сессий?')) {
-            gmSet(KEY_SESSIONS, '[]');
+            await gmSet(KEY_SESSIONS, '[]');
         }
     }
 
