@@ -1,21 +1,15 @@
 // ==UserScript==
 // @name         SaveTabs — Save Open Tabs to HTML
 // @namespace    https://github.com/noimg
-// @version      1.2.0
+// @version      1.4.0
 // @description  Saves all open tabs to a beautiful HTML page. Hotkey: Cmd+Shift+M
 // @author       Konstantin Batischev
 // @match        *://*/*
-// @run-at       document-idle
+// @run-at       document-end
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
 // ==/UserScript==
-
-// Safari / Userscripts note:
-//   GM_addValueChangeListener is unavailable in the Userscripts Safari extension.
-//   Cross-tab close signaling uses setInterval polling on GM_getValue instead.
-//   BroadcastChannel is intentionally NOT used: it is same-origin only and would
-//   miss tabs from other domains. GM_getValue is shared across all origins.
 
 (function () {
     'use strict';
@@ -29,17 +23,47 @@
     const MAX_SESSIONS = 50;
     const POLL_MS      = 1200;
 
+    // ── Toast (defined first — used for diagnostics from the start) ───────────
+    function showToast(msg, color) {
+        if (!document.body) return;
+        const t = document.createElement('div');
+        t.textContent = msg;
+        Object.assign(t.style, {
+            position: 'fixed', bottom: '24px', right: '24px', zIndex: '2147483647',
+            background: color || '#6366f1', color: '#fff', padding: '10px 18px',
+            borderRadius: '8px', fontSize: '14px', fontFamily: 'system-ui,sans-serif',
+            boxShadow: '0 4px 24px rgba(0,0,0,.4)', pointerEvents: 'none',
+            transition: 'opacity .4s', opacity: '1',
+        });
+        document.body.appendChild(t);
+        setTimeout(() => { t.style.opacity = '0'; }, 1800);
+        setTimeout(() => { if (t.parentNode) t.remove(); }, 2300);
+    }
+
+    // Startup toast — first thing after DOM is ready, before any GM calls
+    showToast('SaveTabs готов  ⌘⇧M');
+
+    // ── Safe GM wrappers (never throw) ────────────────────────────────────────
+    function gmGet(key, def) {
+        try { return GM_getValue(key, def); }
+        catch (_) { return def; }
+    }
+    function gmSet(key, val) {
+        try { GM_setValue(key, val); }
+        catch (_) {}
+    }
+
     // ── Per-tab identity ──────────────────────────────────────────────────────
     let myId = sessionStorage.getItem('savetabs_id');
     if (!myId) {
         myId = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-        sessionStorage.setItem('savetabs_id', myId);
+        try { sessionStorage.setItem('savetabs_id', myId); } catch (_) {}
     }
 
     // ── Self-registration ─────────────────────────────────────────────────────
     function registerSelf() {
         let reg;
-        try { reg = JSON.parse(GM_getValue(KEY_REGISTRY, '[]')); }
+        try { reg = JSON.parse(gmGet(KEY_REGISTRY, '[]')); }
         catch (_) { reg = []; }
 
         const now = Date.now();
@@ -50,48 +74,28 @@
             title: document.title || location.hostname,
             ts: now,
         });
-        GM_setValue(KEY_REGISTRY, JSON.stringify(reg));
+        gmSet(KEY_REGISTRY, JSON.stringify(reg));
     }
 
     registerSelf();
     setInterval(registerSelf, 30000);
 
-    // ── Close signaling (polling, no GM_addValueChangeListener in Safari) ─────
+    // ── Close signaling via polling ───────────────────────────────────────────
     const startedAt = Date.now();
 
     setInterval(() => {
-        let closeAt;
-        try { closeAt = Number(GM_getValue(KEY_CLOSE, 0)); }
-        catch (_) { return; }
+        const closeAt = Number(gmGet(KEY_CLOSE, 0));
         if (closeAt > startedAt) window.close();
     }, POLL_MS);
 
     window.addEventListener('message', (e) => {
         if (e.data && e.data.savetabs === 'CLOSE_ALL') {
-            GM_setValue(KEY_CLOSE, Date.now());
+            gmSet(KEY_CLOSE, Date.now());
             setTimeout(() => window.close(), 350);
         }
     });
 
-    // ── Toast helper ──────────────────────────────────────────────────────────
-    function showToast(msg) {
-        const t = document.createElement('div');
-        t.textContent = msg;
-        Object.assign(t.style, {
-            position: 'fixed', bottom: '24px', right: '24px', zIndex: '2147483647',
-            background: '#6366f1', color: '#fff', padding: '10px 18px',
-            borderRadius: '8px', fontSize: '14px', fontFamily: 'system-ui,sans-serif',
-            boxShadow: '0 4px 24px rgba(0,0,0,.4)', pointerEvents: 'none',
-            transition: 'opacity .4s', opacity: '1',
-        });
-        document.body.appendChild(t);
-        setTimeout(() => { t.style.opacity = '0'; }, 1800);
-        setTimeout(() => t.remove(), 2300);
-    }
-
     // ── Keyboard shortcut: Cmd+Shift+M ───────────────────────────────────────
-    // e.code ('KeyM') is layout-independent and reliable across Safari versions.
-    // Capture phase (true) ensures we get the event before page handlers.
     window.addEventListener('keydown', (e) => {
         if (e.code === 'KeyM' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
             e.preventDefault();
@@ -99,24 +103,19 @@
         }
     }, true);
 
-    // ── Startup toast (confirms the script is running) ────────────────────────
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => showToast('SaveTabs готов  ⌘⇧M'));
-    } else {
-        showToast('SaveTabs готов  ⌘⇧M');
-    }
-
-    // ── Menu commands (Userscripts toolbar icon) ──────────────────────────────
-    GM_registerMenuCommand('💾 Сохранить вкладки  (⌘⇧M)', doSaveTabs);
-    GM_registerMenuCommand('⚙️ Имя файла', configFilename);
-    GM_registerMenuCommand('🗑️ Очистить историю', clearHistory);
+    // ── Menu commands ─────────────────────────────────────────────────────────
+    try {
+        GM_registerMenuCommand('💾 Сохранить вкладки  (⌘⇧M)', doSaveTabs);
+        GM_registerMenuCommand('⚙️ Имя файла', configFilename);
+        GM_registerMenuCommand('🗑️ Очистить историю', clearHistory);
+    } catch (_) {}
 
     // ── Main action ───────────────────────────────────────────────────────────
     function doSaveTabs() {
         registerSelf();
 
         let reg;
-        try { reg = JSON.parse(GM_getValue(KEY_REGISTRY, '[]')); }
+        try { reg = JSON.parse(gmGet(KEY_REGISTRY, '[]')); }
         catch (_) { reg = []; }
 
         const now  = Date.now();
@@ -127,21 +126,20 @@
             .map(({ url, title }) => ({ url, title }));
 
         let sessions;
-        try { sessions = JSON.parse(GM_getValue(KEY_SESSIONS, '[]')); }
+        try { sessions = JSON.parse(gmGet(KEY_SESSIONS, '[]')); }
         catch (_) { sessions = []; }
 
         sessions.unshift({ date: new Date().toISOString(), tabs });
         if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
-        GM_setValue(KEY_SESSIONS, JSON.stringify(sessions));
+        gmSet(KEY_SESSIONS, JSON.stringify(sessions));
 
         const html     = buildHTML(sessions);
-        const filename = GM_getValue(KEY_FILENAME, 'saved-tabs.html');
+        const filename = gmGet(KEY_FILENAME, 'saved-tabs.html');
 
-        // Single blob shared by viewer and download
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         const url  = URL.createObjectURL(blob);
 
-        // Trigger file download first (works regardless of popup policy)
+        // Download
         const a = document.createElement('a');
         a.href     = url;
         a.download = filename;
@@ -149,38 +147,34 @@
         a.click();
         a.remove();
 
-        // Open interactive viewer — may be blocked by Safari popup policy
+        // Open viewer
         const viewer = window.open(url, '_blank');
         setTimeout(() => URL.revokeObjectURL(url), 15000);
 
         if (!viewer) {
-            // Popup was blocked: handle close decision here, then navigate to viewer
             const shouldClose = confirm(
                 'Вкладки сохранены ✓\n\n' +
                 'Закрыть все остальные вкладки?\n\n' +
-                '(Safari заблокировал всплывающее окно — разрешите его в адресной строке для полного функционала)'
+                '(Safari заблокировал окно просмотра — разрешите в адресной строке)'
             );
-            if (shouldClose) {
-                GM_setValue(KEY_CLOSE, Date.now());
-            }
-            // Navigate current tab to viewer after a tick so download can start
+            if (shouldClose) gmSet(KEY_CLOSE, Date.now());
             setTimeout(() => { location.href = url; }, 300);
         }
     }
 
     function configFilename() {
-        const cur = GM_getValue(KEY_FILENAME, 'saved-tabs.html');
+        const cur = gmGet(KEY_FILENAME, 'saved-tabs.html');
         const val = prompt('Имя файла для сохранения:', cur);
         if (val && val.trim()) {
             let fn = val.trim();
             if (!fn.endsWith('.html')) fn += '.html';
-            GM_setValue(KEY_FILENAME, fn);
+            gmSet(KEY_FILENAME, fn);
         }
     }
 
     function clearHistory() {
         if (confirm('Очистить всю историю сессий?')) {
-            GM_setValue(KEY_SESSIONS, '[]');
+            gmSet(KEY_SESSIONS, '[]');
         }
     }
 
@@ -240,8 +234,6 @@
       </section>`;
         }).join('');
 
-        // Embedded <script> uses only var/function to avoid any template-literal
-        // conflicts; dollar signs inside are intentionally escaped as plain text.
         return `<!DOCTYPE html>
 <html lang="ru">
 <head>
