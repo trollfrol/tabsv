@@ -59,4 +59,3 @@ and refreshes its entry every 30 seconds. "Save Tabs" reads this shared registry
 - Tabs without the script (browser settings pages, extensions, blank tabs) are not
   registered and will not appear in the list.
 - "Close all" relies on each tab voluntarily calling `window.close()`.
-- On Safari, the close signal is polled every 1.2 seconds — short delay expected.
