@@ -40,9 +40,6 @@
         setTimeout(() => { if (t.parentNode) t.remove(); }, 2300);
     }
 
-    // Startup toast — first thing after DOM is ready, before any GM calls
-    showToast('SaveTabs готов  ⌘⇧M');
-
     // ── Safe GM wrappers (never throw) ────────────────────────────────────────
     function gmGet(key, def) {
         try { return GM_getValue(key, def); }
@@ -52,6 +49,18 @@
         try { GM_setValue(key, val); }
         catch (_) {}
     }
+
+    // ── GM storage diagnostic + startup toast ─────────────────────────────────
+    // Write a test value and immediately read it back to check if GM works.
+    let gmWorking = false;
+    try {
+        GM_setValue('__st_ping__', 'ok');
+        gmWorking = (GM_getValue('__st_ping__', '') === 'ok');
+    } catch (_) {}
+
+    showToast(gmWorking
+        ? 'SaveTabs готов  ⌘⇧M'
+        : 'SaveTabs готов  ⌘⇧M\n(GM хранилище недоступно — только текущая вкладка)');
 
     // ── Per-tab identity ──────────────────────────────────────────────────────
     let myId = sessionStorage.getItem('savetabs_id');
@@ -120,10 +129,16 @@
 
         const now  = Date.now();
         const seen = new Set();
-        const tabs = reg
-            .filter(t => now - t.ts < STALE_MS)
+
+        // Current tab is always added directly — works even if GM storage is broken
+        const currentTab = { url: location.href, title: document.title || location.hostname, ts: now };
+        const allEntries = [currentTab, ...reg.filter(t => now - t.ts < STALE_MS)];
+
+        const tabs = allEntries
             .filter(t => { if (seen.has(t.url)) return false; seen.add(t.url); return true; })
             .map(({ url, title }) => ({ url, title }));
+
+        showToast(`Сохраняю ${tabs.length} вкладок…`);
 
         let sessions;
         try { sessions = JSON.parse(gmGet(KEY_SESSIONS, '[]')); }
