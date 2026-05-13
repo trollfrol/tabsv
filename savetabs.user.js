@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SaveTabs — Save Open Tabs to HTML
 // @namespace    https://github.com/noimg
-// @version      1.4.0
+// @version      1.5.0
 // @description  Saves all open tabs to a beautiful HTML page. Hotkey: Ctrl+Shift+M
 // @author       Konstantin Batischev
 // @match        *://*/*
@@ -54,51 +54,6 @@
         }
     });
 
-    // ── Message handler (from viewer) ─────────────────────────────────────────
-    window.addEventListener('message', (e) => {
-        if (!e.data || typeof e.data.savetabs !== 'string') return;
-        switch (e.data.savetabs) {
-            case 'CLOSE_ALL':
-                GM_setValue(KEY_CLOSE, Date.now());
-                setTimeout(() => window.close(), 350);
-                break;
-
-            case 'DELETE_SESSION': {
-                try {
-                    let ss = JSON.parse(GM_getValue(KEY_SESSIONS, '[]'));
-                    ss = ss.filter(s => s.date !== e.data.date);
-                    GM_setValue(KEY_SESSIONS, JSON.stringify(ss));
-                } catch (_) {}
-                break;
-            }
-            case 'DELETE_TAB': {
-                try {
-                    let ss = JSON.parse(GM_getValue(KEY_SESSIONS, '[]'));
-                    const sess = ss.find(s => s.date === e.data.date);
-                    if (sess) {
-                        sess.tabs = sess.tabs.filter(t => t.url !== e.data.url);
-                        if (!sess.tabs.length) ss = ss.filter(s => s.date !== e.data.date);
-                    }
-                    GM_setValue(KEY_SESSIONS, JSON.stringify(ss));
-                } catch (_) {}
-                break;
-            }
-            case 'DOWNLOAD': {
-                try {
-                    const ss = JSON.parse(GM_getValue(KEY_SESSIONS, '[]'));
-                    const fn = GM_getValue(KEY_FILENAME, 'saved-tabs.html');
-                    const blob = new Blob([buildHTML(ss)], { type: 'text/html;charset=utf-8' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = fn;
-                    document.body.appendChild(a); a.click(); a.remove();
-                    setTimeout(() => URL.revokeObjectURL(url), 5000);
-                } catch (_) {}
-                break;
-            }
-        }
-    });
-
     // ── Keyboard shortcut: Ctrl+Shift+M ──────────────────────────────────────
     document.addEventListener('keydown', (e) => {
         if (e.key === 'M' && e.shiftKey && (e.metaKey || e.ctrlKey) && !e.altKey) {
@@ -135,10 +90,7 @@
         if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
         GM_setValue(KEY_SESSIONS, JSON.stringify(sessions));
 
-        const blob = new Blob([buildHTML(sessions)], { type: 'text/html;charset=utf-8' });
-        const url  = URL.createObjectURL(blob);
-        window.open(url, '_blank');
-        setTimeout(() => URL.revokeObjectURL(url), 15000);
+        injectViewer(sessions);
     }
 
     function configFilename() {
@@ -157,81 +109,101 @@
         }
     }
 
-    // ── HTML builder ──────────────────────────────────────────────────────────
-    function esc(s) {
-        return String(s ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
+    // ── Inline viewer via Shadow DOM ──────────────────────────────────────────
+    function injectViewer(sessions) {
+        document.getElementById('_st_host')?.remove();
 
-    function buildHTML(sessions) {
         const totalTabs   = sessions.reduce((n, s) => n + s.tabs.length, 0);
         const latestCount = sessions[0] ? sessions[0].tabs.length : 0;
 
-        const sessionsMarkup = sessions.map((sess, si) => {
-            const d         = new Date(sess.date);
-            const dateLabel = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-            const timeLabel = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        const host = document.createElement('div');
+        host.id = '_st_host';
+        Object.assign(host.style, {
+            all: 'initial', position: 'fixed', inset: '0',
+            zIndex: '2147483647', display: 'block',
+        });
+        document.documentElement.appendChild(host);
 
-            const tabsMarkup = sess.tabs.map(tab => {
-                let host = '';
-                try { host = new URL(tab.url).hostname; } catch (_) {}
-                const fav = host
-                    ? `<img class="fav" src="https://www.google.com/s2/favicons?sz=32&amp;domain=${encodeURIComponent(host)}" width="16" height="16" loading="lazy" onerror="this.style.display='none'" alt="">`
-                    : `<span class="fav-ph"></span>`;
-                return `
-        <li>
-          <a href="${esc(tab.url)}" target="_blank" rel="noopener noreferrer">
-            ${fav}
-            <span class="t-body">
-              <span class="t-title">${esc(tab.title || tab.url)}</span>
-              <span class="t-url">${esc(tab.url)}</span>
-            </span>
-            <span class="t-arrow">↗</span>
-          </a>
-          <button class="tab-del" data-action="del-tab" data-date="${esc(sess.date)}" data-url="${esc(tab.url)}" title="Удалить">✕</button>
-        </li>`;
-            }).join('');
+        const root = host.attachShadow({ mode: 'open' });
+        root.innerHTML = buildOverlay(sessions, latestCount, totalTabs);
 
-            return `
-      <section class="sess${si === 0 ? ' sess--new' : ''}">
-        <div class="sess-hd">
-          <div class="sess-dt">
-            <span class="sess-day">${esc(dateLabel)}</span>
-            <span class="sess-time">${esc(timeLabel)}</span>
-          </div>
-          <span class="sess-cnt">${sess.tabs.length}&nbsp;вкладок</span>
-          <button class="sess-del" data-action="del-sess" data-date="${esc(sess.date)}" title="Удалить сессию">✕</button>
-        </div>
-        <ul class="tab-ul">${tabsMarkup}
-        </ul>
-      </section>`;
-        }).join('');
+        const get = id => root.getElementById(id);
 
-        return `<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Вкладки</title>
-<style>
+        get('st-btn-yes').onclick = () => {
+            GM_setValue(KEY_CLOSE, Date.now());
+            setTimeout(() => window.close(), 350);
+            get('st-modal').classList.add('hidden');
+        };
+        get('st-btn-no').onclick  = () => get('st-modal').classList.add('hidden');
+        get('st-btn-dl').onclick  = () => download(sessions);
+        get('st-btn-x').onclick   = () => host.remove();
+
+        root.querySelector('.main').addEventListener('click', ev => {
+            const sb = ev.target.closest('[data-action="del-sess"]');
+            if (sb) {
+                if (!confirm('Удалить сессию?')) return;
+                updateSessions(ss => ss.filter(s => s.date !== sb.dataset.date));
+                sb.closest('.sess').remove();
+                return;
+            }
+            const tb = ev.target.closest('[data-action="del-tab"]');
+            if (tb) {
+                updateSessions(ss => {
+                    const s = ss.find(s => s.date === tb.dataset.date);
+                    if (s) {
+                        s.tabs = s.tabs.filter(t => t.url !== tb.dataset.url);
+                        if (!s.tabs.length) return ss.filter(s => s.date !== tb.dataset.date);
+                    }
+                    return ss;
+                });
+                const li = tb.closest('li');
+                const ul = li.closest('ul');
+                li.remove();
+                if (!ul.querySelector('li')) ul.closest('.sess').remove();
+            }
+        });
+
+        document.addEventListener('keydown', function onEsc(e) {
+            if (e.key === 'Escape') { host.remove(); document.removeEventListener('keydown', onEsc); }
+        });
+    }
+
+    function updateSessions(fn) {
+        let ss;
+        try { ss = JSON.parse(GM_getValue(KEY_SESSIONS, '[]')); } catch (_) { ss = []; }
+        GM_setValue(KEY_SESSIONS, JSON.stringify(fn(ss)));
+    }
+
+    function download(sessions) {
+        const fn  = GM_getValue(KEY_FILENAME, 'saved-tabs.html');
+        const blob = new Blob([buildHTML(sessions)], { type: 'text/html;charset=utf-8' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url; a.download = fn;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+
+    // ── Overlay HTML (shadow root content) ────────────────────────────────────
+    function buildOverlay(sessions, latestCount, totalTabs) {
+        return `<style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
+:host{
+  display:block;position:fixed;inset:0;z-index:2147483647;
+  overflow-y:auto;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  background:#0d0f18;color:#e2e8f0;line-height:1.5;
   --bg:#0d0f18;--surface:#161929;--border:#252840;
   --accent:#6366f1;--accent-h:#4f46e5;
   --text:#e2e8f0;--muted:#8892aa;--link:#818cf8;
   --radius:12px;
 }
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
-  background:var(--bg);color:var(--text);line-height:1.5;min-height:100vh}
-.modal-ov{
-  position:fixed;inset:0;z-index:1000;
+#st-modal{
+  position:fixed;inset:0;z-index:10;
   background:rgba(0,0,0,.65);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
   display:flex;align-items:center;justify-content:center;
   animation:fadein .2s ease}
-.modal-ov.hidden{display:none}
+#st-modal.hidden{display:none}
 .modal-card{
   background:var(--surface);border:1px solid var(--border);
   border-radius:var(--radius);padding:40px 44px;
@@ -251,15 +223,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .btn-no{background:transparent;color:var(--muted);border:1px solid var(--border)}
 .btn-no:hover{color:var(--text);border-color:var(--muted)}
 .hdr{background:var(--surface);border-bottom:1px solid var(--border);
-  padding:18px 0;position:sticky;top:0;z-index:100}
+  padding:18px 0;position:sticky;top:0;z-index:5}
 .hdr-in{max-width:880px;margin:0 auto;padding:0 24px;
   display:flex;align-items:center;justify-content:space-between;gap:16px}
 .hdr-logo{font-size:20px;font-weight:700;letter-spacing:-.3px}
 .hdr-meta{font-size:13px;color:var(--muted);margin-top:3px}
-.btn-dl{flex-shrink:0;padding:8px 18px;border-radius:8px;border:1px solid var(--border);
+.hdr-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.btn-dl{padding:8px 18px;border-radius:8px;border:1px solid var(--border);
   background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;
   white-space:nowrap;transition:color .15s,border-color .15s}
 .btn-dl:hover{color:var(--text);border-color:var(--muted)}
+.btn-x{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);
+  background:transparent;color:var(--muted);font-size:18px;font-weight:400;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:color .15s,border-color .15s;line-height:1}
+.btn-x:hover{color:var(--text);border-color:var(--muted)}
 .main{max-width:880px;margin:32px auto 80px;padding:0 24px}
 .sess{background:var(--surface);border:1px solid var(--border);
   border-radius:var(--radius);margin-bottom:20px;overflow:hidden}
@@ -302,10 +280,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
   .hdr-in{flex-direction:column;align-items:flex-start}
 }
 </style>
-</head>
-<body>
 
-<div id="modal-ov" class="modal-ov">
+<div id="st-modal">
   <div class="modal-card">
     <div class="modal-icon">🗂️</div>
     <h2 class="modal-title">Вкладки сохранены</h2>
@@ -315,8 +291,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
       Закрыть все исходные вкладки?
     </p>
     <div class="modal-btns">
-      <button id="btn-yes" class="btn btn-yes">Да, закрыть</button>
-      <button id="btn-no"  class="btn btn-no">Нет, оставить</button>
+      <button id="st-btn-yes" class="btn btn-yes">Да, закрыть</button>
+      <button id="st-btn-no"  class="btn btn-no">Нет, оставить</button>
     </div>
   </div>
 </div>
@@ -327,56 +303,134 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
       <div class="hdr-logo">Сохранённые вкладки</div>
       <div class="hdr-meta">${sessions.length} сессий · ${totalTabs} вкладок</div>
     </div>
-    <button id="btn-dl" class="btn-dl">⬇ Скачать HTML</button>
+    <div class="hdr-right">
+      <button id="st-btn-dl" class="btn-dl">⬇ Скачать HTML</button>
+      <button id="st-btn-x"  class="btn-x" title="Закрыть">×</button>
+    </div>
   </div>
 </header>
 
 <main class="main">
-${sessionsMarkup}
+${buildSessionsMarkup(sessions)}
+</main>`;
+    }
+
+    function buildSessionsMarkup(sessions) {
+        return sessions.map((sess, si) => {
+            const d         = new Date(sess.date);
+            const dateLabel = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+            const timeLabel = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+            const tabsMarkup = sess.tabs.map(tab => {
+                let host = '';
+                try { host = new URL(tab.url).hostname; } catch (_) {}
+                const fav = host
+                    ? `<img class="fav" src="https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(host)}" width="16" height="16" loading="lazy" onerror="this.style.display='none'" alt="">`
+                    : `<span class="fav-ph"></span>`;
+                return `
+        <li>
+          <a href="${esc(tab.url)}" target="_blank" rel="noopener noreferrer">
+            ${fav}
+            <span class="t-body">
+              <span class="t-title">${esc(tab.title || tab.url)}</span>
+              <span class="t-url">${esc(tab.url)}</span>
+            </span>
+            <span class="t-arrow">↗</span>
+          </a>
+          <button class="tab-del" data-action="del-tab" data-date="${esc(sess.date)}" data-url="${esc(tab.url)}" title="Удалить">✕</button>
+        </li>`;
+            }).join('');
+
+            return `
+      <section class="sess${si === 0 ? ' sess--new' : ''}">
+        <div class="sess-hd">
+          <div class="sess-dt">
+            <span class="sess-day">${esc(dateLabel)}</span>
+            <span class="sess-time">${esc(timeLabel)}</span>
+          </div>
+          <span class="sess-cnt">${sess.tabs.length}&nbsp;вкладок</span>
+          <button class="sess-del" data-action="del-sess" data-date="${esc(sess.date)}" title="Удалить сессию">✕</button>
+        </div>
+        <ul class="tab-ul">${tabsMarkup}
+        </ul>
+      </section>`;
+        }).join('');
+    }
+
+    // ── Standalone HTML for download ──────────────────────────────────────────
+    function buildHTML(sessions) {
+        const totalTabs   = sessions.reduce((n, s) => n + s.tabs.length, 0);
+
+        return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вкладки</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0f18;--surface:#161929;--border:#252840;
+  --accent:#6366f1;
+  --text:#e2e8f0;--muted:#8892aa;--link:#818cf8;
+  --radius:12px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  background:var(--bg);color:var(--text);line-height:1.5;min-height:100vh}
+.hdr{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:18px 0}
+.hdr-in{max-width:880px;margin:0 auto;padding:0 24px}
+.hdr-logo{font-size:20px;font-weight:700;letter-spacing:-.3px}
+.hdr-meta{font-size:13px;color:var(--muted);margin-top:3px}
+.main{max-width:880px;margin:32px auto 80px;padding:0 24px}
+.sess{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);margin-bottom:20px;overflow:hidden}
+.sess--new{border-color:var(--accent)}
+.sess-hd{display:flex;align-items:center;gap:12px;
+  padding:16px 22px;border-bottom:1px solid var(--border)}
+.sess-dt{display:flex;flex-direction:column;flex:1;min-width:0}
+.sess-day{font-size:15px;font-weight:600;text-transform:capitalize}
+.sess-time{font-size:13px;color:var(--muted);margin-top:2px}
+.sess-cnt{font-size:12px;font-weight:600;color:var(--accent);
+  background:rgba(99,102,241,.12);padding:4px 12px;border-radius:20px;white-space:nowrap}
+.tab-ul{list-style:none}
+.tab-ul li{border-bottom:1px solid var(--border)}
+.tab-ul li:last-child{border-bottom:none}
+.tab-ul a{display:flex;align-items:center;gap:12px;padding:12px 22px;
+  color:inherit;text-decoration:none;transition:background .12s}
+.tab-ul a:hover{background:rgba(255,255,255,.04)}
+.tab-ul a:hover .t-title{color:var(--link)}
+.fav{flex-shrink:0;border-radius:3px}
+.fav-ph{flex-shrink:0;width:16px;height:16px;border-radius:3px;background:var(--border)}
+.t-body{display:flex;flex-direction:column;flex:1;min-width:0}
+.t-title{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t-url{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;margin-top:2px}
+.t-arrow{flex-shrink:0;color:var(--muted);font-size:14px;opacity:0;transition:opacity .12s}
+.tab-ul a:hover .t-arrow{opacity:1}
+</style>
+</head>
+<body>
+<header class="hdr">
+  <div class="hdr-in">
+    <div class="hdr-logo">Сохранённые вкладки</div>
+    <div class="hdr-meta">${sessions.length} сессий · ${totalTabs} вкладок</div>
+  </div>
+</header>
+<main class="main">
+${buildSessionsMarkup(sessions)}
 </main>
-
-<script>
-(function () {
-  if (!window.opener) {
-    document.getElementById('modal-ov').classList.add('hidden');
-    document.getElementById('btn-dl').style.display = 'none';
-    document.querySelectorAll('.sess-del,.tab-del').forEach(function(b){ b.style.display='none'; });
-    return;
-  }
-
-  document.getElementById('btn-yes').addEventListener('click', function () {
-    try { window.opener.postMessage({savetabs:'CLOSE_ALL'},'*'); } catch(_) {}
-    document.getElementById('modal-ov').classList.add('hidden');
-  });
-  document.getElementById('btn-no').addEventListener('click', function () {
-    document.getElementById('modal-ov').classList.add('hidden');
-  });
-
-  document.getElementById('btn-dl').addEventListener('click', function () {
-    try { window.opener.postMessage({savetabs:'DOWNLOAD'},'*'); } catch(_) {}
-  });
-
-  document.querySelector('.main').addEventListener('click', function (ev) {
-    var sessBtn = ev.target.closest('[data-action="del-sess"]');
-    if (sessBtn) {
-      if (!confirm('Удалить сессию?')) return;
-      try { window.opener.postMessage({savetabs:'DELETE_SESSION',date:sessBtn.dataset.date},'*'); } catch(_) {}
-      sessBtn.closest('.sess').remove();
-      return;
-    }
-    var tabBtn = ev.target.closest('[data-action="del-tab"]');
-    if (tabBtn) {
-      try { window.opener.postMessage({savetabs:'DELETE_TAB',date:tabBtn.dataset.date,url:tabBtn.dataset.url},'*'); } catch(_) {}
-      var li = tabBtn.closest('li');
-      var ul = li.closest('ul');
-      li.remove();
-      if (!ul.querySelector('li')) ul.closest('.sess').remove();
-    }
-  });
-}());
-<\/script>
 </body>
 </html>`;
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+    function esc(s) {
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
     }
 
 })();
